@@ -86,6 +86,54 @@
             maintainers = with lib.maintainers; [ ];
           };
         };
+
+        # --- NixOS VM Test ---
+        vmTest = pkgs.nixosTest {
+          name = "kiro-vm-test";
+          nodes.machine = {
+            # This is a NixOS configuration for the VM
+            imports = [ ];
+
+            # Enable a graphical environment (X11)
+            services.xserver = {
+              enable = true;
+              windowManager.xmonad.enable = true;
+            };
+            
+            # **FIXED**: Correct path for autoLogin
+            services.displayManager.autoLogin = {
+              enable = true;
+              user = "testuser";
+            };
+
+            # Create the user that will be logged in
+            users.users.testuser = {
+              isNormalUser = true;
+            };
+
+            # Install the Kiro package into the VM
+            environment.systemPackages = [
+              self.packages.${system}.default # This refers to the 'kiro' package
+            ];
+          };
+
+          # This script runs on the host and controls the VM (it's Python!)
+          testScript = ''
+            start_all()
+            machine.wait_for_unit("multi-user.target")
+            machine.wait_for_x()
+            machine.succeed("pgrep -u testuser xmonad")
+
+            machine.succeed("sudo -u testuser kiro --version")
+
+            machine.execute("sudo -u testuser DISPLAY=:0 kiro &")
+
+            machine.sleep(10)
+
+            machine.succeed("pgrep -f 'kiro --no-sandbox'")
+          '';
+        };
+
       in
       {
         packages = {
@@ -100,6 +148,11 @@
             meta.description = "Launch the Kiro IDE";
           };
           default = self.apps.${system}.kiro;
+        };
+
+        # Add the test to the flake's checks
+        checks = {
+          default = vmTest;
         };
       });
 }
