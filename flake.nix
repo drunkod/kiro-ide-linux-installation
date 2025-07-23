@@ -1,107 +1,105 @@
-{ description = "A Nix flake to package the Kiro IDE.";
+{
+  description = "A Nix flake to package the Kiro IDE.";
 
-inputs = { nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; flake-utils.url = "github:numtide/flake-utils"; };
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
+  };
 
-outputs = { self, nixpkgs, flake-utils, ... }: flake-utils.lib.eachDefaultSystem (system: let
-    pkgs = import nixpkgs {
-      inherit system;
-      config.allowUnfree = true;
-    };
-    lib = pkgs.lib;
+  outputs = { self, nixpkgs, flake-utils, ... }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+        };
+        lib = pkgs.lib;
 
-    # --- Configuration ---
-    # Metadata fetched from: https://prod.download.desktop.kiro.dev/stable/metadata-linux-x64-stable.json
-    version = "0.1.15";
+        version = "0.1.15";
 
-    # This package is only available for x86_64 Linux based on the download URL
-    # SHA256 hash obtained via: nix-prefetch-url <URL>
-    src = pkgs.fetchurl {
-      url = "https://prod.download.desktop.kiro.dev/releases/202507180237--distro-linux-x64-tar-gz/202507180237-distro-linux-x64.tar.gz";
-      sha256 = "01vg1wwskgpq8jwwr2gh7f4xsba79ajlwsxqgdvr84aac38wcw3i";
-    };
+        src = pkgs.fetchurl {
+          url = "https://prod.download.desktop.kiro.dev/releases/202507180237--distro-linux-x64-tar-gz/202507180237-distro-linux-x64.tar.gz";
+          sha256 = "01vg1wwskgpq8jwwr2gh7f4xsba79ajlwsxqgdvr84aac38wcw3i";
+        };
 
-    # --- Package Builder ---
-    kiro = pkgs.stdenv.mkDerivation {
-      pname = "kiro";
-      inherit version src;
+        kiro = pkgs.stdenv.mkDerivation {
+          pname = "kiro";
+          inherit version src;
 
-      # The tarball extracts into a "Kiro" directory
-      sourceRoot = "Kiro";
+          sourceRoot = "Kiro";
 
-      nativeBuildInputs = [
-        pkgs.makeWrapper
-        pkgs.copyDesktopItems
-        pkgs.autoPatchelfHook # Automatically patches ELF binaries
-      ];
+          nativeBuildInputs = [
+            pkgs.makeWrapper
+            pkgs.autoPatchelfHook
+          ];
 
-      # Runtime dependencies needed by the Electron application
-      buildInputs = [
-        pkgs.alsa-lib
-        pkgs.at-spi2-atk
-        pkgs.cups
-        pkgs.dbus
-        pkgs.expat
-        pkgs.gtk3
-        pkgs.xorg.libxshmfence
-        pkgs.nss
-        pkgs.pipewire
-      ];
+          buildInputs = [
+            pkgs.alsa-lib
+            pkgs.at-spi2-atk
+            pkgs.cups
+            pkgs.dbus
+            pkgs.expat
+            pkgs.gtk3
+            pkgs.xorg.libxshmfence
+            pkgs.nss
+            pkgs.pipewire
+            pkgs.libdrm
+            pkgs.libgbm
+            pkgs.xorg.libxkbfile
+          ];
 
-      installPhase = ''
-        runHook preInstall
+          installPhase = ''
+            runHook preInstall
 
-        # Copy the application contents
-        mkdir -p $out/lib/kiro
-        cp -r ./* $out/lib/kiro/
+            mkdir -p $out/lib/kiro
+            cp -r ./* $out/lib/kiro/
 
-        # Create a wrapper for the main executable.
-        # The --no-sandbox flag is a common workaround for running Electron apps
-        # in the Nix store without a setuid chrome-sandbox.
-        makeWrapper $out/lib/kiro/kiro $out/bin/kiro \
-          --add-flags "--no-sandbox"
+            makeWrapper $out/lib/kiro/kiro $out/bin/kiro \
+              --add-flags "--no-sandbox"
 
-        # Install desktop item
-        install -Dm644 -t $out/share/applications ./resources/app/resources/linux/kiro.desktop
-        substituteInPlace $out/share/applications/kiro.desktop \
-          --replace 'Exec=kiro' 'Exec=$out/bin/kiro'
+            # Create the .desktop file since one is not provided in the tarball
+            mkdir -p $out/share/applications
+            cat > $out/share/applications/kiro.desktop << EOF
+            [Desktop Entry]
+            Name=Kiro
+            Comment=Kiro - AI-powered development environment
+            Exec=$out/bin/kiro
+            Icon=kiro
+            Terminal=false
+            Type=Application
+            Categories=Development;IDE;
+            StartupWMClass=kiro
+            EOF
 
-        # Install icon
-        install -Dm644 ./resources/app/resources/linux/kiro.png \
-          $out/share/icons/hicolor/512x512/apps/kiro.png
+            # Use the icon we found inside the tarball
+            install -Dm644 ./resources/app/resources/linux/code.png \
+              $out/share/icons/hicolor/512x512/apps/kiro.png
 
-        runHook postInstall
-      '';
+            runHook postInstall
+          '';
 
-      meta = {
-        description = "Kiro - AI-powered development environment";
-        homepage = "https://kiro.dev/";
-        # The license is proprietary
-        license = lib.licenses.unfree;
-        # The download URL is specific to x86_64-linux
-        platforms = [ "x86_64-linux" ];
-        maintainers = with lib.maintainers; [ ]; # Add your handle here if you wish
-      };
-    };
+          meta = {
+            description = "Kiro - AI-powered development environment";
+            homepage = "https://kiro.dev/";
+            license = lib.licenses.unfree;
+            platforms = [ "x86_64-linux" ];
+            maintainers = with lib.maintainers; [ ];
+          };
+        };
+      in
+      {
+        packages = {
+          inherit kiro;
+          default = kiro;
+        };
 
-  in
-  {
-    # --- Flake Outputs ---
-    packages = {
-      inherit kiro;
-      default = kiro;
-    };
-
-    apps = {
-      kiro = {
-        type = "app";
-        program = "${kiro}/bin/kiro";
-      };
-      default = self.apps.${system}.kiro;
-    };
-
-    devShells.default = pkgs.mkShell {
-      name = "kiro-shell";
-      packages = [ kiro ];
-    };
-  });
+        apps = {
+          kiro = {
+            type = "app";
+            program = "${kiro}/bin/kiro";
+            meta.description = "Launch the Kiro IDE";
+          };
+          default = self.apps.${system}.kiro;
+        };
+      });
 }
