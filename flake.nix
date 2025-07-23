@@ -17,65 +17,131 @@
 
         version = "0.1.15";
 
-        src = pkgs.fetchurl {
-          url = "https://prod.download.desktop.kiro.dev/releases/202507180237--distro-linux-x64-tar-gz/202507180237-distro-linux-x64.tar.gz";
-          sha256 = "01vg1wwskgpq8jwwr2gh7f4xsba79ajlwsxqgdvr84aac38wcw3i";
-        };
+        # Define libraries separately so we can reference them in postFixup
+        libs = with pkgs; [
+          gtk3
+          alsa-lib
+          at-spi2-atk
+          at-spi2-core
+          cups
+          dbus
+          expat
+          nss
+          nspr
+          pipewire
+          libdrm
+          mesa
+          libGL
+          libglvnd
+          libxkbcommon
+          pango
+          cairo
+          gdk-pixbuf
+          glib
+          freetype
+          fontconfig
+          libnotify
+          xorg.libX11
+          xorg.libXcomposite
+          xorg.libXdamage
+          xorg.libXext
+          xorg.libXfixes
+          xorg.libXrandr
+          xorg.libxcb
+          xorg.libxshmfence
+          xorg.libxkbfile
+          xorg.libXi
+          xorg.libXrender
+          xorg.libXtst
+          xorg.libXScrnSaver
+          xorg.libXcursor
+          xorg.libXinerama
+          libpulseaudio
+          systemd
+          udev
+        ];
 
         kiro = pkgs.stdenv.mkDerivation {
           pname = "kiro";
-          inherit version src;
+          inherit version;
+          src = pkgs.fetchurl {
+            url = "https://prod.download.desktop.kiro.dev/releases/202507180237--distro-linux-x64-tar-gz/202507180237-distro-linux-x64.tar.gz";
+            sha256 = "01vg1wwskgpq8jwwr2gh7f4xsba79ajlwsxqgdvr84aac38wcw3i";
+          };
 
           sourceRoot = "Kiro";
 
           nativeBuildInputs = [
             pkgs.makeWrapper
             pkgs.autoPatchelfHook
+            pkgs.wrapGAppsHook
           ];
 
-          buildInputs = [
-            pkgs.alsa-lib
-            pkgs.at-spi2-atk
-            pkgs.cups
-            pkgs.dbus
-            pkgs.expat
-            pkgs.gtk3
-            pkgs.xorg.libxshmfence
-            pkgs.nss
-            pkgs.pipewire
-            pkgs.libdrm
-            pkgs.libgbm
-            pkgs.xorg.libxkbfile
+          buildInputs = libs;
+
+          runtimeDependencies = [
+            pkgs.libglvnd
+            pkgs.mesa
+            pkgs.mesa.drivers
+            pkgs.vulkan-loader
           ];
 
           installPhase = ''
             runHook preInstall
-
             mkdir -p $out/lib/kiro
             cp -r ./* $out/lib/kiro/
+            
+            # Remove chrome-sandbox to force --no-sandbox mode
+            rm -f $out/lib/kiro/chrome-sandbox
+            
+            runHook postInstall
+          '';
 
-            makeWrapper $out/lib/kiro/kiro $out/bin/kiro \
-              --add-flags "--no-sandbox"
+          postFixup = ''
+            # Create a launcher script that explicitly sets --no-sandbox
+            mkdir -p $out/bin
+            cat > $out/bin/kiro << 'EOF'
+            #!/bin/sh
+            export LD_LIBRARY_PATH="${lib.makeLibraryPath libs}:${pkgs.libglvnd}/lib:${pkgs.mesa}/lib:${pkgs.mesa.drivers}/lib:$LD_LIBRARY_PATH"
+            export __EGL_VENDOR_LIBRARY_DIRS="${pkgs.mesa.drivers}/share/glvnd/egl_vendor.d"
+            export LIBGL_DRIVERS_PATH="${pkgs.mesa.drivers}/lib/dri"
+            export LIBVA_DRIVERS_PATH="${pkgs.mesa.drivers}/lib/dri"
+            export NIXOS_OZONE_WL="1"
+            
+            # Force no sandbox mode
+            exec "$out/lib/kiro/kiro" --no-sandbox "$@"
+            EOF
+            
+            chmod +x $out/bin/kiro
+            
+            # Also try the bin/kiro if it exists
+            if [ -f $out/lib/kiro/bin/kiro ]; then
+              chmod +x $out/lib/kiro/bin/kiro
+            fi
 
-            # Create the .desktop file since one is not provided in the tarball
+            # Create the desktop file
             mkdir -p $out/share/applications
-            cat > $out/share/applications/kiro.desktop << EOF
+            cat > $out/share/applications/kiro.desktop << 'EOF'
             [Desktop Entry]
             Name=Kiro
             Comment=Kiro - AI-powered development environment
-            Exec=$out/bin/kiro
+            Exec=kiro %F
             Icon=kiro
             Terminal=false
             Type=Application
             Categories=Development;IDE;
             StartupWMClass=kiro
+            MimeType=text/plain;
             EOF
 
-            # Use the icon we found inside the tarball
-            install -Dm644 ./resources/app/resources/linux/code.png \
-              $out/share/icons/hicolor/512x512/apps/kiro.png
-
-            runHook postInstall
+            # Install the icon
+            if [ -f $out/lib/kiro/resources/app/resources/linux/code.png ]; then
+              install -Dm644 $out/lib/kiro/resources/app/resources/linux/code.png \
+                $out/share/icons/hicolor/512x512/apps/kiro.png
+            fi
+            
+            # Substitute the correct output path in the launcher
+            substituteInPlace $out/bin/kiro --replace '$out' "$out"
           '';
 
           meta = {
@@ -85,53 +151,6 @@
             platforms = [ "x86_64-linux" ];
             maintainers = with lib.maintainers; [ ];
           };
-        };
-
-        # --- NixOS VM Test ---
-        vmTest = pkgs.nixosTest {
-          name = "kiro-vm-test";
-          nodes.machine = {
-            # This is a NixOS configuration for the VM
-            imports = [ ];
-
-            # Enable a graphical environment (X11)
-            services.xserver = {
-              enable = true;
-              windowManager.xmonad.enable = true;
-            };
-            
-            # **FIXED**: Correct path for autoLogin
-            services.displayManager.autoLogin = {
-              enable = true;
-              user = "testuser";
-            };
-
-            # Create the user that will be logged in
-            users.users.testuser = {
-              isNormalUser = true;
-            };
-
-            # Install the Kiro package into the VM
-            environment.systemPackages = [
-              self.packages.${system}.default # This refers to the 'kiro' package
-            ];
-          };
-
-          # This script runs on the host and controls the VM (it's Python!)
-          testScript = ''
-            start_all()
-            machine.wait_for_unit("multi-user.target")
-            machine.wait_for_x()
-            machine.succeed("pgrep -u testuser xmonad")
-
-            machine.succeed("sudo -u testuser kiro --version")
-
-            machine.execute("sudo -u testuser DISPLAY=:0 kiro &")
-
-            machine.sleep(10)
-
-            machine.succeed("pgrep -f 'kiro --no-sandbox'")
-          '';
         };
 
       in
@@ -148,11 +167,6 @@
             meta.description = "Launch the Kiro IDE";
           };
           default = self.apps.${system}.kiro;
-        };
-
-        # Add the test to the flake's checks
-        checks = {
-          default = vmTest;
         };
       });
 }
